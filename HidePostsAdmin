@@ -1,0 +1,20 @@
+<?php
+/*
+Plugin Name: Hide Posts in Admin for Administrators
+Description: Hides the posts list in the admin area for administrator users.
+Version: 1.0
+Author: Diegof
+*/
+
+// Función para ocultar posts en el área de administración si el usuario es administrador
+function ocultar_posts_para_admin() {
+    if (current_user_can('administrator')) {
+        // Ocultar el menú de "Entradas" en el dashboard de WordPress
+        remove_menu_page('edit.php'); // 'edit.php' es el slug para el menú de Entradas
+    }
+}
+
+// Hook que se ejecuta cuando se carga el menú del dashboard
+add_action('admin_menu', 'ocultar_posts_para_admin');
+
+?>
