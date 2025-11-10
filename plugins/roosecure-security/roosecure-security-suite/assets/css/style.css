@@ -1,0 +1,10 @@
+
+.roosecure-dashboard { font-family: Arial, sans-serif; }
+.tabs { margin-top: 10px; margin-bottom: 20px; }
+.tabs a { margin-right: 10px; padding: 8px 15px; text-decoration: none; background: #f1f1f1; border-radius: 4px; color: #333; }
+.tabs a.active { background: #0073aa; color: white; }
+.cards { display: flex; gap: 20px; }
+.card { flex: 1; background: #fff; border: 1px solid #ddd; border-radius: 8px; text-align: center; padding: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+.switch-btn { float: right; background: #0073aa; color: white; padding: 8px 12px; border: none; border-radius: 20px; cursor: pointer; }
+.dark-mode { background-color: #1e1e1e; color: #f0f0f0; }
+.dark-mode .card { background-color: #333; border-color: #555; color: #fff; }
