@@ -2,12 +2,17 @@
 if (!defined('ABSPATH')) exit;
 
 /**
- * =======================================================
- * 🛡️ RooSecure - Security Hooks (Versión estable)
- * =======================================================
+ * RooSecure - Security Hooks (Versión estable)
+ * 
  * Controla intentos de login fallidos, bloqueo temporal, bloqueo permanente por IP,
  * bloqueo por inactividad y notificaciones por email.
- * Incluye registro de eventos en la tabla wp_roosecure_login_log.
+ *  * Todas las funciones están protegidas con sanitización, try/catch y buenas prácticas.
+ * Bloqueo por IP permanente y temporal
+    *Bloqueo por nombres de usuario
+    *Registro de intentos en la tabla del logger
+    *Control de inactividad (con 2 min de gracia después del login)
+    *Mensaje de cierre de sesión por inactividad
+    *Notificación por email al detectar intentos fallidos excesivos
  */
 
 /* =======================================================
@@ -25,37 +30,7 @@ function roosecure_get_remote_ip() {
 }
 
 /* =======================================================
- * 🔹 Guardar evento de login en la tabla de logs (fallback)
- *    Si ya tienes includes/logger.php cargado con esta función,
- *    este bloque no se redefine (evita colisiones).
- * ======================================================= */
-
-/*
-if (!function_exists('roosecure_log_event')) {
-    function roosecure_log_event($username, $status = 'info', $message = '') {
-        global $wpdb;
-        $table_name = $wpdb->prefix . 'roosecure_login_log';
-        $ip = roosecure_get_remote_ip();
-
-        // Asegurar tabla existente
-        if ($wpdb->get_var($wpdb->prepare("SHOW TABLES LIKE %s", $table_name)) !== $table_name) return;
-
-        $wpdb->insert(
-            $table_name,
-            array(
-                'user_login' => sanitize_text_field($username),
-                'ip_address' => sanitize_text_field($ip),
-                'status'     => sanitize_text_field($status),
-                'message'    => sanitize_text_field($message),
-                'event_time' => current_time('mysql')
-            ),
-            array('%s','%s','%s','%s','%s')
-        );
-    }
-}
-*/
-/* =======================================================
- * 🔹 BLOQUEO PREVIO POR IP o por nombre de usuario
+ * 🔹 BLOQUEO PREVIO POR IP (temporal o permanente)
  * ======================================================= */
 add_filter('authenticate', function($user, $username, $password) {
     try {
@@ -68,7 +43,6 @@ add_filter('authenticate', function($user, $username, $password) {
             if (count($ips) > 3) $ips = array_slice($ips, 0, 3);
 
             if (in_array($ip, $ips, true)) {
-                roosecure_log_event($username, 'blocked', 'IP bloqueada permanentemente');
                 return new WP_Error('roosecure_blocked_ip', __('<strong>ERROR</strong>: Acceso denegado desde su IP.', 'roosecure'));
             }
         }
@@ -76,11 +50,11 @@ add_filter('authenticate', function($user, $username, $password) {
         // 2️⃣ IP temporalmente bloqueadas (por intentos fallidos)
         $lock_key = 'roosecure_lock_ip_' . md5($ip);
         $locked_until = get_transient($lock_key);
+
         if ($locked_until) {
             $now = time();
             if ($locked_until > $now) {
                 $minutes = ceil(($locked_until - $now) / 60);
-                roosecure_log_event($username, 'blocked', "IP temporalmente bloqueada por {$minutes} minutos");
                 return new WP_Error(
                     'roosecure_temp_locked',
                     sprintf(__('<strong>ERROR</strong>: Demasiados intentos fallidos. Intente de nuevo en %d minuto(s).', 'roosecure'), $minutes)
@@ -90,23 +64,34 @@ add_filter('authenticate', function($user, $username, $password) {
             }
         }
 
-        // 3️⃣ Bloqueo por nombres de usuario comunes
-        $blocked_users = get_option('roosecure_blocked_users', 'admin,root,test');
+
+        // Bloqueo por nombres de usuario comunes (configurable en opciones)
+        $blocked_users = get_option('roosecure_blocked_users', get_option('roosecure_restricted_usernames', 'admin,root,test'));
         $blocked_users_array = array_filter(array_map('trim', explode(',', strtolower($blocked_users))));
-        if (!empty($username) && in_array(strtolower($username), $blocked_users_array, true)) {
-            roosecure_log_event($username, 'blocked', 'Usuario bloqueado por política de nombres');
+            if (!empty($username) && in_array(strtolower($username), $blocked_users_array, true)) {
+                if (function_exists('roosecure_log_event')) {
+                roosecure_log_event($username, 'blocked', 'Usuario bloqueado por política de nombres');
+            }
             return new WP_Error('roosecure_blocked_user', __('<strong>ERROR</strong>: Este nombre de usuario no está permitido por razones de seguridad.', 'roosecure'));
-        }
+            }
 
-        // ✅ Éxito de login → registrar
-        add_action('wp_login', function($user_login) {
-            roosecure_log_event($user_login, 'success', 'Inicio de sesión exitoso');
-        }, 10, 1);
 
-        // ❌ Fallo de login → registrar
-        add_action('wp_login_failed', function($username) {
-            roosecure_log_event($username, 'failed', 'Intento fallido de inicio de sesión');
-        }, 10, 1);
+
+
+            // ✅ Éxito de login → registrar
+            add_action('wp_login', function($user_login) {
+                if (function_exists('roosecure_log_event')) {
+                    roosecure_log_event($user_login, 'success', 'Inicio de sesión exitoso');
+                }
+            }, 10, 1);
+
+            // ✅ Fallo de login → registrar (además de tu lógica de bloqueo existente)
+            add_action('wp_login_failed', function($username) {
+                if (function_exists('roosecure_log_event')) {
+                    roosecure_log_event($username, 'failed', 'Intento fallido de inicio de sesión');
+                }
+            }, 10, 1);
+
 
     } catch (Exception $e) {
         error_log('RooSecure authenticate check failed: ' . $e->getMessage());
@@ -114,6 +99,7 @@ add_filter('authenticate', function($user, $username, $password) {
 
     return $user;
 }, 30, 3);
+
 
 /* =======================================================
  * 🔹 CONTAR INTENTOS FALLIDOS + BLOQUEAR IP
@@ -129,28 +115,31 @@ add_action('wp_login_failed', function($username) {
         $ip_fail_key   = 'roosecure_fail_ip_'   . md5($ip);
         $user_fail_key = 'roosecure_fail_user_' . md5(strtolower($username));
 
-        // Incrementar fallos
-        $current_ip_fails   = intval(get_transient($ip_fail_key)) + 1;
-        $current_user_fails = intval(get_transient($user_fail_key)) + 1;
+        // Incremento de fallos
+        $current_ip_fails = intval(get_transient($ip_fail_key));
+        $current_ip_fails++;
+        set_transient($ip_fail_key, $current_ip_fails, $lock_minutes * 60);
 
-        set_transient($ip_fail_key, $current_ip_fails,   $lock_minutes * 60);
+        $current_user_fails = intval(get_transient($user_fail_key));
+        $current_user_fails++;
         set_transient($user_fail_key, $current_user_fails, $lock_minutes * 60);
 
-        // Superó el límite → bloquear
+        // Superó el límite
         if ($current_ip_fails >= $attempts_allowed || $current_user_fails >= $attempts_allowed) {
             $lock_key = 'roosecure_lock_ip_' . md5($ip);
             $locked_until = time() + ($lock_minutes * 60);
             set_transient($lock_key, $locked_until, $lock_minutes * 60);
 
-            // Email de alerta (una vez por bloqueo)
+            // Enviar email de alerta (una vez por bloqueo)
             $alert_sent_key = 'roosecure_alert_sent_' . md5($ip);
             if (!get_transient($alert_sent_key)) {
                 $to = get_option('roosecure_alert_email', get_option('admin_email'));
-                if (!filter_var($to, FILTER_VALIDATE_EMAIL)) $to = get_option('admin_email');
-
+                if (!filter_var($to, FILTER_VALIDATE_EMAIL)) {
+                    $to = get_option('admin_email');
+                }
                 $subject = 'RooSecure: bloqueo temporal activado para IP ' . $ip;
                 $body  = "Se detectó que la IP {$ip} o el usuario {$username} superó el umbral de intentos fallidos ({$attempts_allowed}).\n";
-                $body .= "Acceso bloqueado durante {$lock_minutes} minuto(s).\n\n";
+                $body .= "Acceso bloqueado temporalmente durante {$lock_minutes} minuto(s).\n\n";
                 $body .= "Fecha/hora: " . date_i18n('Y-m-d H:i:s') . "\n";
 
                 if (function_exists('wp_mail')) {
@@ -158,87 +147,82 @@ add_action('wp_login_failed', function($username) {
                 }
                 set_transient($alert_sent_key, 1, $lock_minutes * 60);
             }
-
-            roosecure_log_event($username, 'blocked', "IP bloqueada temporalmente por {$lock_minutes} minutos");
         }
-
     } catch (Exception $e) {
         error_log('RooSecure login failed hook error: ' . $e->getMessage());
     }
 });
 
+
 /* =======================================================
- * 🔹 CONTROL DE INACTIVIDAD DE USUARIO LOGUEADO (con 2 min de gracia post-login)
- * =======================================================
+ * 🔹 CONTROL DE INACTIVIDAD DE USUARIO LOGUEADO
+ * ======================================================= */
 add_action('init', 'roosecure_check_user_inactivity');
+
 function roosecure_check_user_inactivity() {
     if (!is_user_logged_in()) return;
 
     $user_id = get_current_user_id();
     $now = time();
 
-    // Tiempo de inactividad configurable (minutos)
+    // Tiempo de inactividad configurable (minutos) desde el panel
     $lock_minutes = intval(get_option('roosecure_lock_time', 10));
     if ($lock_minutes < 1) $lock_minutes = 10;
     $timeout = $lock_minutes * 60;
 
-    // Evitar aplicar durante login o AJAX
+    // Evitar aplicar durante login o ajax
     $request_uri = $_SERVER['REQUEST_URI'] ?? '';
     if (
         strpos($request_uri, 'wp-login.php') !== false ||
-        strpos($request_uri, 'wp-admin/admin-ajax.php') !== false ||
-        strpos($request_uri, 'admin-ajax.php') !== false
+        strpos($request_uri, 'wp-admin/admin-ajax.php') !== false
     ) {
         return;
     }
 
+    // Última actividad y hora de login
     $last_activity = get_user_meta($user_id, 'roosecure_last_activity', true);
     $login_time    = get_user_meta($user_id, 'roosecure_login_time', true);
 
-    // Ventana de gracia de 2 minutos tras el login
+    // 1) Ventana de gracia de 2 minutos después del login
     if (!$login_time) {
         update_user_meta($user_id, 'roosecure_login_time', $now);
     } elseif (($now - intval($login_time)) < 120) {
+        // Dentro de la gracia: no desconectar, sólo refrescar actividad
         update_user_meta($user_id, 'roosecure_last_activity', $now);
         return;
     }
 
-    // Reset si cambió el día
+    // 2) Si la marca pertenece a un día anterior, reiniciar sin cerrar sesión
     if (!empty($last_activity)) {
-        $last_date = date('Y-m-d', intval($last_activity));
-        if ($last_date !== date('Y-m-d', $now)) {
+        $last_date    = date('Y-m-d', intval($last_activity));
+        $current_date = date('Y-m-d', $now);
+        if ($last_date !== $current_date) {
             update_user_meta($user_id, 'roosecure_last_activity', $now);
             return;
         }
     }
 
-    // Logout si supera inactividad
+    // 3) Cierre por inactividad si supera el límite configurado
     if ($last_activity && ($now - intval($last_activity)) > $timeout) {
-        $u = wp_get_current_user();
-        if ($u && !empty($u->user_login)) {
-            roosecure_log_event($u->user_login, 'logout', 'Sesión cerrada por inactividad');
-        }
         wp_logout();
         wp_safe_redirect(wp_login_url() . '?inactivity=1');
         exit;
     }
 
-    // Actualizar última actividad
+    // 4) Actualizar última actividad
     update_user_meta($user_id, 'roosecure_last_activity', $now);
 }
-*/
-
-
 
 /* =======================================================
  * 🔹 MENSAJE EN LOGIN SI SE DESLOGUEÓ POR INACTIVIDAD
  * ======================================================= */
-add_filter('login_message', function($message) {
+add_action('login_message', function($message) {
     if (isset($_GET['inactivity'])) {
         $message .= '<div class="notice notice-warning"><p><strong>Sesión finalizada por inactividad.</strong> Por favor, vuelve a iniciar sesión.</p></div>';
     }
     return $message;
 });
+
 
 /* =======================================================
  * 🔹 BLOQUEO GLOBAL POR IPS PERMANENTES
@@ -264,3 +248,50 @@ add_action('init', function() {
         error_log('RooSecure permanent IP block failed: ' . $e->getMessage());
     }
 });
+
+
+/* =======================================================
+ * 🔹 Cierre automático por inactividad con 1 min de gracia
+ * ======================================================= */
+add_action('init', 'roosecure_auto_logout_inactivity');
+function roosecure_auto_logout_inactivity() {
+    if (!is_user_logged_in()) return;
+
+    // Tiempo base y de gracia (en segundos)
+    $timeout = 15 * 60; // 15 minutos
+    $grace   = 1 * 60;  // 1 minuto extra de gracia
+    $limit   = $timeout + $grace;
+
+    $last_activity = get_user_meta(get_current_user_id(), '_roosecure_last_activity', true);
+    $current_time  = time();
+
+    // Si ya pasó el tiempo máximo permitido (15 + 1 min) → cerrar sesión
+    if (!empty($last_activity) && ($current_time - intval($last_activity)) > $limit) {
+        wp_logout();
+        wp_redirect(wp_login_url() . '?message=inactivity');
+        exit;
+    }
+
+    // Actualiza el tiempo de última actividad
+    update_user_meta(get_current_user_id(), '_roosecure_last_activity', $current_time);
+}
+
+/* =======================================================
+ * 🔹 Mostrar mensaje en pantalla de login
+ * ======================================================= */
+add_action('login_message', 'roosecure_inactivity_message');
+function roosecure_inactivity_message($message) {
+    if (isset($_GET['message']) && $_GET['message'] === 'inactivity') {
+        $message .= '<div class="notice notice-warning" style="
+            padding:10px;
+            margin-bottom:10px;
+            background:#fff3cd;
+            border-left:4px solid #ff9800;
+            font-size:14px;
+        ">
+        🔒 <strong>Sesión finalizada por inactividad</strong> (15 + 1 min de gracia).<br>
+        Por favor, vuelve a iniciar sesión.
+        </div>';
+    }
+    return $message;
+}
